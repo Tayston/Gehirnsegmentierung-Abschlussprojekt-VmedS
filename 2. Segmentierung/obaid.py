@@ -88,7 +88,7 @@ brain_mask_combined = T1_mask | FLAIR_mask
 # -------------------------------------------------------------------------
 # Intensity-basiertes Skull-Stripping
 # -------------------------------------------------------------------------
-brain_mask_filtered = brain_mask_combined & (T1_slice < t1_upper_threshold)
+brain_mask_filtered = brain_mask_combined & (T1_slice < t1_upper_threshold-)
 brain_mask_filtered = brain_mask_filtered & (FLAIR_slice > flair_lower_threshold)
 brain_mask_stripped = binary_fill_holes(brain_mask_filtered)
 
