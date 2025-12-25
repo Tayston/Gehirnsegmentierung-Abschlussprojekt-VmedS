@@ -74,8 +74,8 @@ flair_lower_threshold = 50      # Intensität unterhalb -> kein Gehirn
 # -------------------------------------------------------------------------
 # MRI Slices laden
 # -------------------------------------------------------------------------
-T1_slice = load_slice_corrected("pat13_reg_T1.nii.gz", "T1")
-FLAIR_slice = load_slice_corrected("pat13_reg_FLAIR.nii.gz", "FLAIR")
+T1_slice = load_slice_corrected("data/pat13_reg_T1.nii", "T1")
+FLAIR_slice = load_slice_corrected("data/pat13_reg_FLAIR.nii", "FLAIR")
 
 # -------------------------------------------------------------------------
 # Brain-Masken erstellen
@@ -185,9 +185,9 @@ def get_brain_mask_slice(slice_img, threshold=0.05):
 # 2) Volumina laden (T1, FLAIR, R1)
 # -------------------------------------------------------
 
-T1_vol    = load_volume_corrected("pat13_reg_T1.nii.gz",    "T1")
-FLAIR_vol = load_volume_corrected("pat13_reg_FLAIR.nii.gz", "FLAIR")
-IR_vol    = load_volume_corrected("pat13_reg_IR.nii.gz",    "IR")  # für später wichtig; irrelevant für Brain Mask 
+T1_vol    = load_volume_corrected("data/pat13_reg_T1.nii",    "T1")
+FLAIR_vol = load_volume_corrected("data/pat13_reg_FLAIR.nii", "FLAIR")
+IR_vol    = load_volume_corrected("data/pat13_reg_IR.nii",    "IR")  # für später wichtig; irrelevant für Brain Mask 
 
 nx, ny, nz = T1_vol.shape #nz = Anzahl der slices
 print(f"Volumen-Abmessungen: nx={nx}, ny={ny}, nz={nz}")
@@ -226,7 +226,7 @@ for z in range(nz): #es wird jeder slice von 1 bis nz mit der Brain mask 'gebrai
 # 4) 3D-K-Means-Cluster: CSF / GM / WM
 # -------------------------------------------------------
 
-brain_idx = np.where(brain_mask_3d) #Array, mit allen koordninaten (mit brain mask) alle slices
+brain_idx = np.where(brain_mask_3d) # Array, mit allen koordninaten (mit brain mask) alle slices
 if brain_idx[0].size == 0:
     raise RuntimeError("3D-Brain-Maske ist leer – überprüfe Thresholds und Daten.")  # Abbruch des programms falls kein gehirn erkannt wird 
 
