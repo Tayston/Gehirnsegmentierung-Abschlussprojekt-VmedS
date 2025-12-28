@@ -1,4 +1,5 @@
 # Version 1: Code funktioniert für beide Patienten, nur pro Slice Segmentierung und keine Vergleiche
+# Aktuell wird immer die mittleren Slice verwendet
 import numpy as np
 import nibabel as nib
 import matplotlib.pyplot as plt
