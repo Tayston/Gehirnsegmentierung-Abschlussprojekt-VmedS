@@ -1,3 +1,4 @@
+# Obaid Elhakim
 # Version 2: Erste Versuch, Vergleiche zwischen Slices zu implementieren, um Ergbenisse zu verbessern
 # Aktuell werden immer die mittlere 45-55% der Slices miteinander verglichen
 import numpy as np
