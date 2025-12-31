@@ -1,401 +1,453 @@
-#Obaid
 import numpy as np
 import nibabel as nib
 import matplotlib.pyplot as plt
 from scipy.ndimage import binary_fill_holes, label
 
-# -------------------------------------------------------------------------
-# Funktion: Brain-Maske für einen Slice erstellen (Relative Threshold)
-# -------------------------------------------------------------------------
-def get_brain_mask(slice_img, threshold=0.05):
+# ============================================================
+# 1) Robuste Normalisierung & Vorverarbeitung
+# ============================================================
+
+def robust_minmax_to_uint8(vol, p_low=1, p_high=99):
     """
-    Erstellt eine binäre Maske für das Gehirn aus einem 2D-Slice.
+    Führt eine robuste Min-Max-Skalierung auf den Wertebereich [0, 255] (8-Bit) durch.
     
-    Parameters:
-        slice_img : 2D numpy array
-            Einzelner Slice des MRI
-        threshold : float
-            Bruchteil des Maximalwerts, der als Gehirngewebe gilt
+    Hintergrund:
+    MRT-Intensitätswerte sind nicht standardisiert (im Gegensatz zu Hounsfield-Einheiten im CT).
+    Zudem enthalten MRT-Rohdaten oft extreme Ausreißer (z.B. helle Artefakte), die eine 
+    klassische Min-Max-Skalierung verzerren würden.
     
-    Returns:
-        brain_mask_clean : 2D boolean array
-            Maske, True = Gehirn, False = Hintergrund
-    """
-    # 1. Schwellenwert
-    thresh_val = threshold * np.max(slice_img)
-    mask = slice_img > thresh_val
-
-    # 2. Löcher füllen
-    mask_filled = binary_fill_holes(mask)
-
-    # 3. Größte zusammenhängende Komponente behalten
-    labels, num = label(mask_filled)
-    sizes = np.bincount(labels.ravel())
-    sizes[0] = 0  # Hintergrund ignorieren
-    largest_label = sizes.argmax()
-    brain_mask_clean = labels == largest_label
-
-    return brain_mask_clean
-
-# -------------------------------------------------------------------------
-# Funktion: MRI Slice laden (korrekte Orientierung)
-# -------------------------------------------------------------------------
-def load_slice_corrected(path, name):
-    """
-    Lädt ein MRI, extrahiert den mittleren Slice und korrigiert die Orientierung.
+    Vorgehen:
+    1. Berechnung der Perzentile (z.B. 1. und 99.), um Ausreißer zu ignorieren.
+    2. Clipping der Werte außerhalb dieses Bereichs (Sättigung).
+    3. Lineare Transformation des verbleibenden Wertebereichs auf [0, 255].
     
-    Returns:
-        slice_img : 2D numpy array
+    Parameter:
+        vol: Das 3D-Volumen (Numpy Array).
+        p_low, p_high: Untere und obere Perzentilgrenzen.
+    
+    Rückgabe:
+        Skaliertes Volumen als uint8 (speichereffizient und standardisiert).
     """
-    print(f"\n--- Lade {name} ---")
-    img = np.asarray(nib.load(path).dataobj)
-    print(f"{name} Original Form:", img.shape)
+    v = vol.astype(np.float32)  # Konvertierung für präzise Berechnungen
+    lo = np.percentile(v, p_low)   # Untere Robustheitsgrenze
+    hi = np.percentile(v, p_high)  # Obere Robustheitsgrenze
 
-    # Mittleren Slice auswählen (Z-Achse)
-    z_idx = img.shape[2] // 2
-    slice_img = img[:, :, z_idx].astype(float)
+    # Sicherheitscheck: Verhindert Division durch Null bei flachen/leeren Bildern
+    if hi <= lo + 1e-6:
+        return np.zeros_like(v, dtype=np.uint8)
 
-    # Transpose für korrekte X/Y-Darstellung in Matplotlib
-    slice_img = np.transpose(slice_img)
+    # Clipping: Werte < lo werden zu lo, Werte > hi werden zu hi
+    v = np.clip(v, lo, hi)
+    
+    # Lineare Skalierung auf [0, 1]
+    v = (v - lo) / (hi - lo)
+    
+    # Skalierung auf [0, 255] und Konvertierung in Ganzzahlen
+    return (v * 255.0).astype(np.uint8)
 
-    # Flip vertikal + horizontal, damit Gehirn korrekt oben ist
-    slice_img = np.flipud(slice_img)
-    slice_img = np.fliplr(slice_img)
-
-    return slice_img
-
-# -------------------------------------------------------------------------
-# Parameter
-# -------------------------------------------------------------------------
-brain_threshold = 0.05          # relativer Schwellenwert
-t1_upper_threshold = 1200       # Intensität oberhalb -> wahrscheinlich Schädel
-flair_lower_threshold = 50      # Intensität unterhalb -> kein Gehirn
-
-# -------------------------------------------------------------------------
-# MRI Slices laden
-# -------------------------------------------------------------------------
-T1_slice = load_slice_corrected("data/pat13_reg_T1.nii", "T1")
-FLAIR_slice = load_slice_corrected("data/pat13_reg_FLAIR.nii", "FLAIR")
-
-# -------------------------------------------------------------------------
-# Brain-Masken erstellen
-# -------------------------------------------------------------------------
-T1_mask = get_brain_mask(T1_slice, threshold=brain_threshold)
-FLAIR_mask = get_brain_mask(FLAIR_slice, threshold=brain_threshold)
-
-# Kombinierte Maske (OR)
-brain_mask_combined = T1_mask | FLAIR_mask
-
-# -------------------------------------------------------------------------
-# Intensity-basiertes Skull-Stripping
-# -------------------------------------------------------------------------
-brain_mask_filtered = brain_mask_combined & (T1_slice < t1_upper_threshold)
-brain_mask_filtered = brain_mask_filtered & (FLAIR_slice > flair_lower_threshold)
-brain_mask_stripped = binary_fill_holes(brain_mask_filtered)
-
-# -------------------------------------------------------------------------
-# Maskierte Gehirnbilder erstellen
-# -------------------------------------------------------------------------
-T1_brain_stripped = T1_slice * brain_mask_stripped
-FLAIR_brain_stripped = FLAIR_slice * brain_mask_stripped
-
-# -------------------------------------------------------------------------
-# Visualisierung: Original Slices + Skull-stripped Brain
-# -------------------------------------------------------------------------
-fig, axs = plt.subplots(1, 4, figsize=(20,5))
-
-# T1 Original
-axs[0].imshow(T1_slice, cmap="gray", origin="lower")
-axs[0].set_title("T1 Original")
-axs[0].axis("off")
-
-# FLAIR Original
-axs[1].imshow(FLAIR_slice, cmap="gray", origin="lower")
-axs[1].set_title("FLAIR Original")
-axs[1].axis("off")
-
-# Brain-Maske Overlay
-axs[2].imshow(T1_slice, cmap="gray", origin="lower")
-axs[2].imshow(brain_mask_stripped, cmap="Reds", alpha=0.3)
-axs[2].set_title("Skull-stripped Brain Mask")
-axs[2].axis("off")
-
-# Maskiertes Gehirn
-axs[3].imshow(T1_brain_stripped, cmap="gray", origin="lower")
-axs[3].set_title("T1 Skull-stripped Brain")
-axs[3].axis("off")
-
-plt.show()
-
-print("\nT1 und FLAIR erfolgreich verarbeitet. Skull-stripped Brain erstellt.")
-# Verena 
-import numpy as np
-import nibabel as nib
-import matplotlib.pyplot as plt
-from scipy.ndimage import binary_fill_holes, label
-
-# -------------------------------------------------------
-# 1) Hilfsfunktionen
-# -------------------------------------------------------
-
-def load_volume_corrected(path, name):
+def orient_slice(vol_uint8, z):
     """
-    Lädt ein 3D-MRI-Volumen und korrigiert die Orientierung
-    so, dass die Slices ähnlich aussehen wie bei 2D-Code.
+    Extrahiert einen axialen Schnitt (Slice) und korrigiert dessen Orientierung 
+    für die radiologische Darstellung.
+    
+    Anatomischer Bezug:
+    In Python-Bibliotheken (wie Matplotlib) ist der Koordinatenursprung oft oben links.
+    Radiologische Bilder werden jedoch konventionell so betrachtet, als würde man von 
+    den Füßen des Patienten nach oben schauen (Links im Bild = Rechts am Patienten).
+    
+    Vorgehen:
+    1. Transposition: Vertauscht X- und Y-Achsen.
+    2. Flip LR / Flip UD: Korrigiert Spiegelungen, sodass die Nase oben und
+       die linke Gehirnhälfte rechts im Bild erscheint (radiologische Konvention).
     """
-    print(f"\n--- Lade Volumen {name} ---")
-    img = nib.load(path)
-    data = np.asarray(img.dataobj).astype(float)   # (X, Y, Z)
-    print(f"{name} Volumen-Form (roh):", data.shape)
+    s = np.transpose(vol_uint8[:, :, z])
+    s = np.fliplr(s)
+    s = np.flipud(s)
+    return s
 
-    # wie beim 2D-Slice: transpose + Flip X/Y
-    # 2D hattest du: slice = np.transpose(slice); flipud; fliplr
-    # Das entspricht hier: Achsen 0 und 1 vertauschen, dann flip 0 und 1
-    vol = np.transpose(data, (1, 0, 2))  # (Y, X, Z) -> (X', Y', Z)
-    vol = np.flip(vol, axis=0)           # flipud
-    vol = np.flip(vol, axis=1)           # fliplr
+# ============================================================
+# 2) Brain Mask (Skull Stripping) & ROI-Einschränkung
+# ============================================================
 
-    # print(f"{name} Volumen-Form (korrigiert):", vol.shape)
-    return vol
-
-
-def get_brain_mask_slice(slice_img, threshold=0.05):
+def get_brain_mask(slice_uint8, thr_rel=0.10):
     """
-    Dein 2D-Brain-Mask-Ansatz für EINEN Slice.
+    Erstellt eine binäre Maske zur Trennung von Gehirngewebe (Intrakraniell) 
+    und Nicht-Gehirn (Schädelknochen, Kopfhaut, Hintergrund).
+    
+    Verfahren:
+    1. Schwellenwertverfahren (Thresholding): Da der Hintergrund im MRT fast schwarz ist,
+       nutzen wir einen relativen Schwellenwert (z.B. 10% der maximalen Intensität),
+       um Gewebe vom Hintergrund zu trennen.
+    2. Morphologische Operation (Lochfüllung): Anatomische Hohlräume wie die Ventrikel
+       (mit Liquor gefüllt) können dunkel erscheinen. 'binary_fill_holes' stellt sicher,
+       dass diese als Teil des Gehirns erkannt werden.
+    3. Zusammenhangsanalyse (Connected Components): Um Artefakte außerhalb des Kopfes 
+       zu entfernen, behalten wir nur das größte zusammenhängende Objekt (das Gehirn).
+    
+    Rückgabe:
+        Binäre Maske (True = Gehirn, False = Hintergrund).
     """
-    # 1. relativer Schwellenwert
-    thresh_val = threshold * np.max(slice_img)
-    mask = slice_img > thresh_val
+    # Berechnung des absoluten Schwellenwerts basierend auf der Bilddynamik
+    thresh = thr_rel * float(np.max(slice_uint8))
+    
+    # Binarisierung
+    m = slice_uint8 > thresh
+    
+    # Schließt Löcher innerhalb des Gehirns (z.B. dunkle Ventrikel in T1)
+    m = binary_fill_holes(m)
 
-    # 2. Löcher füllen
-    mask_filled = binary_fill_holes(mask)
-
-    # 3. größte zusammenhängende Komponente behalten
-    labels2d, num = label(mask_filled)
+    # Identifikation aller getrennten Objekte im Bild
+    lbl, num = label(m)
     if num == 0:
-        return np.zeros_like(slice_img, dtype=bool)
-    sizes = np.bincount(labels2d.ravel())
-    sizes[0] = 0  # Hintergrund ignorieren
-    largest_label = sizes.argmax()
-    brain_mask_clean = labels2d == largest_label
-    return brain_mask_clean
+        return np.zeros_like(slice_uint8, dtype=bool)
 
+    # Zählen der Pixel pro Objekt
+    sizes = np.bincount(lbl.ravel())
+    sizes[0] = 0  # Hintergrund (Label 0) darf nicht gewählt werden
+    
+    # Erstellen der Maske nur für das größte Objekt (das Gehirn)
+    return lbl == sizes.argmax()
 
-# -------------------------------------------------------
-# 2) Volumina laden (T1, FLAIR, R1)
-# -------------------------------------------------------
-
-T1_vol    = load_volume_corrected("data/pat13_reg_T1.nii",    "T1")
-FLAIR_vol = load_volume_corrected("data/pat13_reg_FLAIR.nii", "FLAIR")
-IR_vol    = load_volume_corrected("data/pat13_reg_IR.nii",    "IR")  # für später wichtig; irrelevant für Brain Mask 
-
-nx, ny, nz = T1_vol.shape #nz = Anzahl der slices
-print(f"Volumen-Abmessungen: nx={nx}, ny={ny}, nz={nz}")
-
-# optional: Parameter aus deinem 2D-Code
-brain_threshold     = 0.05
-t1_upper_threshold  = 1200
-flair_lower_threshold = 50
-
-# -------------------------------------------------------
-# 3) 3D-Brain-Maske aus allen Slices aufbauen
-# -------------------------------------------------------
-
-brain_mask_3d = np.zeros_like(T1_vol, dtype=bool) #leere Maske
-
-for z in range(nz): #es wird jeder slice von 1 bis nz mit der Brain mask 'gebrainmaskt'
-    T1_slice    = T1_vol[:, :, z]
-    FLAIR_slice = FLAIR_vol[:, :, z]
-
-    # grobe Brain-Masken pro Slice
-    T1_mask    = get_brain_mask_slice(T1_slice, threshold=brain_threshold)
-    FLAIR_mask = get_brain_mask_slice(FLAIR_slice, threshold=brain_threshold)
-
-    brain_mask_combined = T1_mask | FLAIR_mask
-
-    # intensity-basiertes Skull-Stripping 
-    brain_mask_filtered = brain_mask_combined & (T1_slice < t1_upper_threshold)
-    brain_mask_filtered = brain_mask_filtered & (FLAIR_slice > flair_lower_threshold)
-    brain_mask_stripped = binary_fill_holes(brain_mask_filtered)
-
-    brain_mask_3d[:, :, z] = brain_mask_stripped
-
-#print("3D-Brain-Maske erstellt.")
-
-# -------------------------------------------------------
-# 4) 3D-K-Means-Cluster: CSF / GM / WM
-# -------------------------------------------------------
-
-brain_idx = np.where(brain_mask_3d) # Array, mit allen koordninaten (mit brain mask) alle slices
-if brain_idx[0].size == 0:
-    raise RuntimeError("3D-Brain-Maske ist leer – überprüfe Thresholds und Daten.")  # Abbruch des programms falls kein gehirn erkannt wird 
-
-feat_T1    = T1_vol[brain_idx] #koordinaten von allen slices aus T1
-feat_FLAIR = FLAIR_vol[brain_idx]#koordinaten von allen slices aus Flair
-feat_IR    = IR_vol[brain_idx]#koordinaten von allen slices aus IR
-
-features = np.stack([feat_T1, feat_FLAIR, feat_IR], axis=1).astype(float) # kombiniert alle 3 Feature Vektoren, zu einer matrix -> und formt in float um 
-
-# Normierung pro Kanal
-eps = 1e-6 # damit sigma nicht null werden kann 
-features_norm = features.copy() #kopiert unsere Matrix 
-for k in range(3): # k = T1, IR und Flair 
-    mu    = np.mean(features_norm[:, k]) # mittelwert jeweils von allen werten von T1, Flair, IR 
-    sigma = np.std(features_norm[:, k]) + eps #Standardabweichung für Normierung und Standardisierung, 
-    features_norm[:, k] = (features_norm[:, k] - mu) / sigma #Normeirte Matrix, alle werte gleichwertig 
-
-# --- K-Means mit K=3 ---
-K = 3
-max_iter = 20 #zahl nicht so wichtig 
-
-rng = np.random.default_rng(0) # startzentrum weil k-mean das immer braucht, start position ist immer gleich bei llen slices 
-rand_idx = rng.choice(features_norm.shape[0], size=K, replace=False) # zufallsgenerator: wähle K zufällige Voxel aus, dass dieselben mehrfach gewählt werden  
-centers = features_norm[rand_idx, :]# diese werte werden als Clusterzentrum verwendet 
-
-for it in range(max_iter):
-    # Zuordnung zu nächsten Zentren
-    distanz = np.linalg.norm(features_norm[:, None, :] - centers[None, :, :], axis=2) # Distanz zwischen voxel und zentrum
-    labels = np.argmin(distanz, axis=1) #kleinste distanz 
-
-    # Zentren neu berechnen
-    new_centers = np.zeros_like(centers) # leere Mappe 
-    for k in range(K):
-        mask_k = labels == k # neues zentrum weil das die kleinste distanz hat also der beste wert 
-        if np.any(mask_k):
-            new_centers[k, :] = np.mean(features_norm[mask_k], axis=0) # neues zentrum; warum mittelwert ?
-        else:
-            new_centers[k, :] = features_norm[rng.integers(0, features_norm.shape[0])] #wenns kein neues zentrum gibt dann wird ein zufälliges aus der matrix gewählt 
-
-    shift = np.linalg.norm(new_centers - centers)#berechnet abstand von allen zentren  
-    centers = new_centers # überschreiben
-    if shift < 1e-3: #wenn zentrum sich nciht mehr viel unterscheiden, dann haben wir schon ein sehr guten zentrum -> abbruch 
-        break
-
-print(f"K-Means nach {it+1} Iterationen konvergiert.")
-
-# Cluster nach mittlerer T1-Intensität sortieren
-cluster_T1_means = [] # für jeden cluster berechnet der code die mittlere t1 intensität und speichert sie zusmmen mit der cluster nummer in eine liste
-for k in range(K):
-    mean_T1_k = np.mean(feat_T1[labels == k]) if np.any(labels == k) else np.inf
-    cluster_T1_means.append((k, mean_T1_k))
-
-cluster_T1_means.sort(key=lambda x: x[1]) #sortiert von dunkel nach hell 
-csf_label = cluster_T1_means[0][0]
-gm_label  = cluster_T1_means[1][0]
-wm_label  = cluster_T1_means[2][0]
-
-print("Cluster-Zuordnung (nach T1-Mittelwert):")
-print(f"  CSF (blau) = Cluster {csf_label}")
-print(f"  GM  (grün) = Cluster {gm_label}")
-print(f"  WM  (rot)  = Cluster {wm_label}")
-
-# -------------------------------------------------------
-# 5) 3D-Masken aufbauen und einfache Optimierung
-# -------------------------------------------------------
-
-csf_mask_3d = np.zeros_like(T1_vol, dtype=bool) #leere maken anlegen 
-gm_mask_3d  = np.zeros_like(T1_vol, dtype=bool)
-wm_mask_3d  = np.zeros_like(T1_vol, dtype=bool)
-
-csf_mask_3d[brain_idx] = (labels == csf_label) # werte sortieren nach CSf GM und Wm und 3d speichern 
-gm_mask_3d[brain_idx]  = (labels == gm_label)
-wm_mask_3d[brain_idx]  = (labels == wm_label)
-
-# alles außerhalb des Gehirns sicher ausschließen
-csf_mask_3d &= brain_mask_3d
-gm_mask_3d  &= brain_mask_3d
-wm_mask_3d  &= brain_mask_3d
-
-# Löcher im CSF schließen (3D)
-csf_mask_3d = binary_fill_holes(csf_mask_3d)
-
-# GM/WM nicht innerhalb des CSF zulassen
-gm_mask_3d &= ~csf_mask_3d
-wm_mask_3d &= ~csf_mask_3d
-
-print("3D-Segmentierung in CSF / GM / WM abgeschlossen.")
-
-# -------------------------------------------------------
-# 6) Visualisierung: ein paar Slices anzeigen
-# -------------------------------------------------------
-
-def show_slice_with_seg(z):
-    T1_slice = T1_vol[:, :, z]
-    csf = csf_mask_3d[:, :, z]
-    gm  = gm_mask_3d[:, :, z]
-    wm  = wm_mask_3d[:, :, z]
-
-    seg_rgb = np.zeros(T1_slice.shape + (3,), dtype=float)
-    seg_rgb[csf, 2] = 1.0  # CSF -> blau
-    seg_rgb[gm, 1]  = 1.0  # GM  -> grün
-    seg_rgb[wm, 0]  = 1.0  # WM  -> rot
-
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-    axs[0].imshow(T1_slice, cmap="gray", origin="lower")
-    axs[0].set_title(f"T1 Slice {z}")
-    axs[0].axis("off")
-
-    axs[1].imshow(T1_slice, cmap="gray", origin="lower")
-    axs[1].imshow(seg_rgb, alpha=0.6, origin="lower")
-    axs[1].set_title(f"Segmentierung Slice {z}")
-    axs[1].axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-# Beispiel: drei Slices anschauen (oben / Mitte / unten)
-show_slice_with_seg(5)
-show_slice_with_seg(nz // 2)
-show_slice_with_seg(nz - 5)
-
-# -------------------------------------------------------
-# 7) ALLE SLICES IN EINEM GROßEN GRID PLOTTEN
-# -------------------------------------------------------
-
-def show_all_slices(T1_vol, csf_mask, gm_mask, wm_mask, cols=8):
+def apply_center_constraint(mask, keep_frac=0.85):
     """
-    Zeigt alle Slices als Miniaturbilder in einem einzigen großen Plot.
-    cols = Anzahl Bilder pro Zeile
+    Wendet eine geometrische Einschränkung (Region of Interest, ROI) an.
+    
+    Zweck:
+    Oft verbleiben bei einfachen Thresholding-Methoden Reste der Augen, der Nase 
+    oder der Hirnhaut (Meningen) am Rand der Maske. Da das Gehirn zentral im 
+    Bild liegt, können wir Ränder proaktiv verwerfen.
+    
+    Vorgehen:
+    Es wird ein rechteckiges Fenster um den Bildmittelpunkt definiert. Alles 
+    außerhalb dieses Fensters (die äußeren 15%, wenn keep_frac=0.85) wird maskiert.
     """
-    nz = T1_vol.shape[2]
-    rows = int(np.ceil(nz / cols))
+    h, w = mask.shape
+    ch, cw = h // 2, w // 2  # Bildmittelpunkt
+    
+    # Berechnung der halben Fenstergröße basierend auf dem Anteil 'keep_frac'
+    hh, ww = int(h * keep_frac / 2), int(w * keep_frac / 2)
 
-    fig, axes = plt.subplots(rows, cols, figsize=(cols*2, rows*2))
+    # Erstellung der ROI-Maske
+    m2 = np.zeros_like(mask, dtype=bool)
+    m2[ch - hh: ch + hh, cw - ww: cw + ww] = True
+    
+    # Logische UND-Verknüpfung: Pixel muss Brain-Maske UND im Zentrum sein
+    return mask & m2
 
-    for z in range(nz):
-        r = z // cols
-        c = z % cols
+# ============================================================
+# 3) K-Means Clustering (Segmentierung)
+# ============================================================
 
-        ax = axes[r, c] if rows > 1 else axes[c]
+def kmeans_fixed_init(X, init_centers, max_iter=40):
+    """
+    Führt den K-Means-Algorithmus zur Gewebeklassifizierung durch.
+    
+    Unterschied zu Standard-Implementierungen (z.B. sklearn):
+    Dieser Algorithmus ist vollständig deterministisch. Er nutzt fest definierte
+    Startzentren (init_centers) anstelle von zufälliger Initialisierung.
+    Dies garantiert reproduzierbare Ergebnisse für medizinische Analysen.
+    
+    Funktionsweise (Lloyd-Algorithmus):
+    1. Assignment: Jeder Voxel wird dem Clusterzentrum zugeordnet, zu dem er 
+       die geringste euklidische Distanz hat.
+    2. Update: Die Zentren werden neu berechnet als Mittelwert aller Voxel, 
+       die ihnen zugeordnet wurden.
+    Dieser Prozess wird wiederholt, bis sich die Zuordnungen nicht mehr ändern (Konvergenz).
+    
+    Parameter:
+        X: Feature-Matrix (N Pixel x D Modalitäten).
+        init_centers: Initiale Clusterzentren (K Klassen x D Modalitäten).
+    """
+    centers = init_centers.astype(np.float32).copy()
+    K = centers.shape[0]  # Anzahl der Gewebeklassen (hier 3: CSF, GM, WM)
 
-        # Slice-Daten
-        T1_slice = T1_vol[:, :, z]
-        csf = csf_mask[:, :, z]
-        gm  = gm_mask[:, :, z]
-        wm  = wm_mask[:, :, z]
+    labels = None
+    for _ in range(max_iter):
+        # 1. Berechnung der Distanzen aller Punkte zu allen Zentren
+        #    X[:, None, :] shape (N, 1, D) - centers[None, :, :] shape (1, K, D)
+        #    Ergebnis Broadcasting: (N, K, D) -> Norm über D -> (N, K)
+        dist = np.linalg.norm(X[:, None, :] - centers[None, :, :], axis=2)
+        
+        # 2. Zuordnung zum nächsten Zentrum (Nearest Neighbor)
+        new_labels = np.argmin(dist, axis=1)
 
-        # RGB bauen
-        seg_rgb = np.zeros(T1_slice.shape + (3,), dtype=float)
-        seg_rgb[csf, 2] = 1.0  # blau
-        seg_rgb[gm, 1]  = 1.0  # grün
-        seg_rgb[wm, 0]  = 1.0  # rot
+        # 3. Konvergenzprüfung: Wenn sich Labels nicht ändern, Abbruch
+        if labels is not None and np.array_equal(new_labels, labels):
+            break
+        labels = new_labels
 
-        # Plot
-        ax.imshow(T1_slice, cmap="gray", origin="lower")
-        ax.imshow(seg_rgb, alpha=0.5, origin="lower")
-        ax.set_title(f"Slice {z}")
-        ax.axis("off")
+        # 4. Update der Cluster-Zentren
+        for k in range(K):
+            pts = X[labels == k]
+            if pts.shape[0] > 0:
+                # Zentrum wandert zum Schwerpunkt der Punktwolke
+                centers[k] = pts.mean(axis=0)
+            # Falls Cluster leer ist, behalten wir das alte Zentrum bei (Stabilität)
 
-    # Falls mehr Felder als Slices, leere Felder ausblenden
-    for r in range(rows):
-        for c in range(cols):
-            idx = r*cols + c
-            if idx >= nz:
-                axes[r, c].axis("off")
+    return labels, centers
 
-    plt.tight_layout()
-    plt.show()
+def labels_to_segmap(labels, idx, shape):
+    """
+    Rekonstruiert das 2D-Bild aus den flachen Label-Vektoren.
+    
+    Die K-Means-Berechnung erfolgt nur auf den maskierten Pixeln (Vektor 'labels').
+    Diese Funktion schreibt die Ergebnisse zurück an die korrekten x,y-Positionen
+    im Bildarray. Labels werden um +1 verschoben (0=Hintergrund, 1=CSF, 2=GM, 3=WM).
+    """
+    seg = np.zeros(shape, dtype=np.uint8)
+    # Zuweisung der Labels an die Positionen, die durch 'idx' (Masken-Indizes) definiert sind
+    seg[idx[0], idx[1]] = (labels.astype(np.uint8) + 1)
+    return seg
 
+def create_rgb(seg):
+    """
+    Erstellt ein farbcodiertes Overlay für die visuelle Inspektion.
+    
+    Farbkodierung (Standard in vielen Neuroimaging-Tools):
+    - Label 1 (CSF - Liquor): Blau
+    - Label 2 (GM - Graue Substanz): Grün
+    - Label 3 (WM - Weiße Substanz): Rot
+    """
+    rgb = np.zeros(seg.shape + (3,), dtype=np.float32)
+    rgb[seg == 1, 2] = 1.0  # Blue channel
+    rgb[seg == 2, 1] = 1.0  # Green channel
+    rgb[seg == 3, 0] = 1.0  # Red channel
+    return rgb
 
-# ---- AUFRUF ----
-show_all_slices(T1_vol, csf_mask_3d, gm_mask_3d, wm_mask_3d, cols=8)
+# ============================================================
+# 4) Datenbasierte Initialisierung (Quantile)
+# ============================================================
+
+def compute_centers_from_quantiles(s_t1, s_fl, s_ir, mask,
+                                   q_csf=0.15, q_gm=0.55, q_wm=0.90,
+                                   band=10):
+    """
+    Berechnet robuste Startzentren für K-Means basierend auf der Statistik des T1-Bildes.
+    
+    Hintergrund:
+    K-Means ist empfindlich gegenüber der Initialisierung. Zufällige Startpunkte können
+    dazu führen, dass Gewebe vertauscht werden (z.B. Cluster 0 wird WM statt CSF).
+    Da T1-Bilder anatomisch gut definiert sind (Dunkel=CSF, Mittel=GM, Hell=WM),
+    nutzen wir Quantile der T1-Intensität zur Schätzung.
+    
+    Vorgehen:
+    1. T1: Bestimmung der Intensitäten bei 15% (CSF), 55% (GM) und 90% (WM) der Verteilung.
+    2. FLAIR/IR: Da die Kontraste hier anders sind, suchen wir Pixel, die im T1-Bild
+       nahe an den oben berechneten Werten liegen (innerhalb eines 'Bandes'). 
+       Von diesen Pixeln nehmen wir den Median im FLAIR- und IR-Bild.
+       Dies stellt sicher, dass wir einen multispektralen Vektor erhalten, der physikalisch
+       zusammenpasst.
+    """
+    # Extraktion der Intensitätswerte innerhalb der Gehirnmaske
+    t = s_t1[mask].astype(np.float32)
+    f = s_fl[mask].astype(np.float32)
+    r = s_ir[mask].astype(np.float32)
+
+    # Fallback für sehr kleine/leere Masken
+    if t.size < 50:
+        return (
+            np.array([20,  80,  80], dtype=np.float32),
+            np.array([110, 110, 110], dtype=np.float32),
+            np.array([235, 170, 170], dtype=np.float32)
+        )
+
+    # 1. Bestimmung der T1-Stützstellen (Ankerpunkte)
+    t_csf = float(np.quantile(t, q_csf))  # Repräsentativ für Liquor
+    t_gm  = float(np.quantile(t, q_gm))   # Repräsentativ für Graue Substanz
+    t_wm  = float(np.quantile(t, q_wm))   # Repräsentativ für Weiße Substanz
+
+    # 2. Definition von Bändern um diese T1-Werte
+    csf_band = t <= (t_csf + band)
+    gm_band  = (t >= (t_gm - band)) & (t <= (t_gm + band))
+    wm_band  = t >= (t_wm - band)
+
+    # 3. Übertragung auf FLAIR und IR mittels Median
+    f_med = float(np.median(f))
+    r_med = float(np.median(r))
+
+    def band_median(arr, band_mask, fallback):
+        # Berechnet Median nur für Pixel im jeweiligen Band
+        return float(np.median(arr[band_mask])) if np.any(band_mask) else float(fallback)
+
+    # Zusammenstellen der 3D-Startvektoren [T1, FLAIR, IR]
+    c_csf = np.array([t_csf, band_median(f, csf_band, f_med), band_median(r, csf_band, r_med)], dtype=np.float32)
+    c_gm  = np.array([t_gm,  band_median(f, gm_band,  f_med), band_median(r, gm_band,  r_med)], dtype=np.float32)
+    c_wm  = np.array([t_wm,  band_median(f, wm_band,  f_med), band_median(r, wm_band,  r_med)], dtype=np.float32)
+
+    return c_csf, c_gm, c_wm
+
+# ============================================================
+# 5) Haupt-Pipeline pro Patient
+# ============================================================
+
+def segment_patient_quantile_centers(t1_path, flair_path, ir_path, patient_id,
+                                    z_mode="mid",
+                                    p_low=1, p_high=99,
+                                    thr_rel=0.10,
+                                    use_center_constraint=True,
+                                    keep_frac=0.85,
+                                    q_csf=0.15, q_gm=0.55, q_wm=0.90,
+                                    band=10,
+                                    weights=(1.2, 1.2, 0.8)):
+    """
+    Führt die vollständige Verarbeitungspipeline für einen Patienten durch.
+    
+    Schritte:
+    1. Daten laden und Normalisieren (0-255).
+    2. Slice-Extraktion (Standard: Mitte des Volumens).
+    3. Maskierung (Skull Stripping + ROI).
+    4. Feature-Erstellung: Kombination von T1, FLAIR und IR zu Vektoren.
+    5. Gewichtung der Features: Da T1 und FLAIR oft kontrastreicher sind,
+       können sie stärker gewichtet werden.
+    6. Initialisierung und Clustering mittels K-Means.
+    7. Rücktransformation und Aufbereitung der Ergebnisse.
+    """
+
+    print(f"\n=== Verarbeite Patient {patient_id} ===")
+
+    # 1. Laden der Rohdaten
+    t1 = nib.load(t1_path).get_fdata()
+    fl = nib.load(flair_path).get_fdata()
+    ir = nib.load(ir_path).get_fdata()
+
+    # 2. Robuste Normalisierung auf 8-Bit
+    t1_8 = robust_minmax_to_uint8(t1, p_low, p_high)
+    fl_8 = robust_minmax_to_uint8(fl, p_low, p_high)
+    ir_8 = robust_minmax_to_uint8(ir, p_low, p_high)
+
+    # 3. Auswahl des Slices (z.B. Mitte des Gehirns)
+    depth = t1_8.shape[2]
+    if z_mode == "mid":
+        z = depth // 2
+    else:
+        z = int(depth * float(z_mode))
+
+    # Orientierungskorrektur der 2D-Slices
+    s_t1 = orient_slice(t1_8, z)
+    s_fl = orient_slice(fl_8, z)
+    s_ir = orient_slice(ir_8, z)
+
+    # 4. Maskenerstellung (Skull Stripping) auf Basis des T1-Bildes
+    mask = get_brain_mask(s_t1, thr_rel=thr_rel)
+    if use_center_constraint:
+        mask = apply_center_constraint(mask, keep_frac=keep_frac)
+
+    # Extraktion der Pixelkoordinaten innerhalb der Maske
+    idx = np.where(mask)
+    if idx[0].size == 0:
+        raise RuntimeError("Fehler: Leere Maske. Bitte Schwellenwerte prüfen.")
+
+    # 5. Feature-Matrix erstellen
+    # Matrix X hat Dimension (Anzahl Pixel, 3 Modalitäten)
+    X = np.stack([s_t1[idx], s_fl[idx], s_ir[idx]], axis=1).astype(np.float32)
+
+    # Anwendung der Feature-Gewichtung
+    # Dies verzerrt den Feature-Raum, sodass wichtige Modalitäten mehr Einfluss auf die Distanzberechnung haben
+    w = np.array(weights, dtype=np.float32)
+    Xw = X * w
+
+    # 6. K-Means Initialisierung (Datenbasiert)
+    c_csf, c_gm, c_wm = compute_centers_from_quantiles(
+        s_t1, s_fl, s_ir, mask,
+        q_csf=q_csf, q_gm=q_gm, q_wm=q_wm,
+        band=band
+    )
+
+    # Skalierung der Startzentren mit den gleichen Gewichten wie die Daten
+    init_centers = np.stack([c_csf * w, c_gm * w, c_wm * w], axis=0)
+
+    # 7. Clustering durchführen
+    labels, centers_w = kmeans_fixed_init(Xw, init_centers, max_iter=40)
+
+    # 8. Rekonstruktion des Segmentierungsbildes
+    seg = labels_to_segmap(labels, idx, s_t1.shape)
+
+    # Rückrechnung der Zentren auf originale Skala für Interpretierbarkeit
+    centers_unweighted = centers_w / (w + 1e-12)
+
+    # Rückgabe aller relevanten Daten für Visualisierung und Debugging
+    return {
+        "patient_id": patient_id,
+        "z": z,
+        "t1": s_t1,
+        "flair": s_fl,
+        "ir": s_ir,
+        "mask": mask,
+        "seg": seg,
+        "seg_rgb": create_rgb(seg),
+        "init_centers_unweighted": np.stack([c_csf, c_gm, c_wm], axis=0),
+        "final_centers_unweighted": centers_unweighted
+    }
+
+# ============================================================
+# 6) Ausführung: Analyse für Patient 7 und 13 + Visualisierung
+# ============================================================
+
+# Parameterwahl basierend auf empirischen Tests für optimale Segmentierung
+res7 = segment_patient_quantile_centers(
+    "data/pat7_reg_T1.nii", "data/pat7_reg_FLAIR.nii", "data/pat7_reg_IR.nii", 
+    patient_id=7, 
+    thr_rel=0.10,          # 10% Schwellenwert für Maske
+    use_center_constraint=True, 
+    keep_frac=0.85,        # Entfernt äußere 15% des Bildes (Artefaktreduktion)
+    q_csf=0.15, q_gm=0.55, q_wm=0.90, # Quantile zur Zentren-Schätzung
+    band=10,
+    weights=(1.2, 1.2, 0.8) # T1 und FLAIR sind informativer als IR, daher höher gewichtet
+)
+
+res13 = segment_patient_quantile_centers(
+    "data/pat13_reg_T1.nii", "data/pat13_reg_FLAIR.nii", "data/pat13_reg_IR.nii", 
+    patient_id=13, 
+    thr_rel=0.10, 
+    use_center_constraint=True, 
+    keep_frac=0.85, 
+    q_csf=0.15, q_gm=0.55, q_wm=0.90, 
+    band=10, 
+    weights=(1.2, 1.2, 0.8)
+)
+
+# 
+# 
+
+# Visualisierung der Ergebnisse
+fig, axs = plt.subplots(2, 5, figsize=(22, 10))
+
+for r, res in enumerate([res7, res13]):
+    # Spalte 1: T1-Originalbild (Anatomische Referenz)
+    axs[r, 0].imshow(res["t1"], cmap="gray", origin="lower")
+    axs[r, 0].set_title(f"Pat{res['patient_id']} T1 (0..255), z={res['z']}")
+    axs[r, 0].axis("off")
+
+    # Spalte 2: Brain Mask (Qualitätskontrolle des Skull Strippings)
+    axs[r, 1].imshow(res["t1"], cmap="gray", origin="lower")
+    axs[r, 1].imshow(res["mask"], alpha=0.35, origin="lower", cmap='Reds') # Rot overlay
+    axs[r, 1].set_title("Brain Mask (Center-Constraint)")
+    axs[r, 1].axis("off")
+
+    # Spalte 3: Segmentierung Overlay (Visueller Abgleich mit Anatomie)
+    axs[r, 2].imshow(res["t1"], cmap="gray", origin="lower")
+    axs[r, 2].imshow(res["seg_rgb"], alpha=0.55, origin="lower")
+    axs[r, 2].set_title("Segmentierung (K-Means)")
+    axs[r, 2].axis("off")
+
+    # Spalte 4: Reine Labelmap (Diskrete Klassen)
+    axs[r, 3].imshow(res["seg"], cmap="tab10", origin="lower")
+    axs[r, 3].set_title("Klassen: 1=CSF, 2=GM, 3=WM")
+    axs[r, 3].axis("off")
+
+    # Spalte 5: Numerische Statistik der Clusterzentren
+    axs[r, 4].axis("off")
+    ic = res["init_centers_unweighted"]
+    fc = res["final_centers_unweighted"]
+    
+    # Formatierung der Textausgabe für Cluster-Werte
+    txt = (
+        "Init-Zentren (T1, FL, IR)\n"
+        f"CSF: {np.round(ic[0], 1)}\nGM : {np.round(ic[1], 1)}\nWM : {np.round(ic[2], 1)}\n\n"
+        "Final-Zentren (Konvergenz)\n"
+        f"CSF: {np.round(fc[0], 1)}\nGM : {np.round(fc[1], 1)}\nWM : {np.round(fc[2], 1)}"
+    )
+    axs[r, 4].text(0.0, 0.5, txt, fontsize=10, va="center", family='monospace')
+
+plt.tight_layout()
+plt.show()
