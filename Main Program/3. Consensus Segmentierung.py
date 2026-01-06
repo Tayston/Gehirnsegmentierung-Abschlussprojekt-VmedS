@@ -1,28 +1,3 @@
-"""
-VERSION 3: 3D-KONSENSUS-SEGMENTIERUNG
-
-BESCHREIBUNG:
-Diese Version erweitert die Segmentierungspipeline um eine volumetrische Analyse.
-Anstatt sich auf die Information eines einzelnen 2D-Schnittbildes zu verlassen, wird ein
-zentrales Volumen (45-55% der Z-Achse) analysiert, um die Segmentierungsgenauigkeit zu erhöhen.
-
-PROBLEMSTELLUNG VERSION 1 (SINGLE-SLICE):
-Die Analyse isolierter Slices ist anfällig für lokales Bildrauschen ("Salt-and-Pepper"-Artefakte)
-und partielle Volumen-Effekte. Fehlklassifikationen einzelner Pixel können nicht korrigiert werden.
-
-LÖSUNGSANSATZ VERSION 2 (CONSENSUS VOTING):
-1. Volumetrische Verarbeitung: Laden der vollständigen 3D-Datensätze (T1, FLAIR, IR).
-2. Multi-Slice-Analyse: Unabhängige Segmentierung einer Serie benachbarter Slices.
-3. Statistischer Konsens: Anwendung eines Mehrheitsentscheids (Majority Voting / Modalwert)
-   pro Voxel-Koordinate über alle analysierten Slices hinweg.
-
-ERGEBNIS:
-Signifikante Reduktion von Rauschartefakten und glattere, anatomisch kohärente Segmentierungsmasken
-im Vergleich zum Single-Slice-Verfahren.
-
--Obaid Elhakim
-"""
-
 import numpy as np
 import nibabel as nib
 import matplotlib.pyplot as plt
